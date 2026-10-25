@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SR Studio | Auto-Pipeline & Mod.io Patcher v7.4</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" href="src/img/icon.ico" type="image/x-icon">
+    <link rel="stylesheet" href="src/assets/main.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+<div class="app-wrap">
+
+    <aside class="sidebar">
+        <header class="brand">
+            <div class="brand-icon">
+                <i data-lucide="cpu"></i>
+            </div>
+            <div class="brand-text">
+                <h1>SR Studio</h1>
+                <span>Auto-Pipeline v7.4</span>
+            </div>
+            <button id="langToggleBtn" class="btn btn-secondary lang-switch">PL</button>
+        </header>
+
+        <div class="sidebar-scroll custom-scrollbar">
+
+            <!-- GŁÓWNA SEKCJA AKCJI (Zawsze widoczna, bez zbędnego tłoku) -->
+            <section class="control-section">
+                <label class="section-label" data-i18n="regionSection">Szybki Pipeline Regionu</label>
+
+                <div class="input-row">
+                    <small data-i18n="selectRegionLabel">1. Wybierz region z gry:</small>
+                    <div style="display: flex; gap: 8px;">
+                        <select id="regionSelect" class="btn btn-secondary" style="flex: 1; text-align: left;">
+                            <option value="">...</option>
+                        </select>
+                        <input type="text" id="customRegionInput" data-i18n-placeholder="regionPlaceholder" placeholder="np. US_19" class="text-input" style="width: 92px;" />
+                    </div>
+                </div>
+
+                <div class="input-row">
+                    <small data-i18n="prebuildProjectLabel">2. Projekt docelowy w Prebuild:</small>
+                    <div class="input-with-picker">
+                        <select id="prebuildProjectSelect" class="text-input" style="flex: 1;"></select>
+                        <input type="text" id="customPrebuildProjectInput" class="text-input" placeholder="lub wpisz..." style="width: 100px;" />
+                        <button id="refreshPrebuildBtn" class="btn btn-secondary btn-picker" title="Odśwież listę projektów w prebuild oraz .zip w Mods">
+                            <i data-lucide="refresh-cw" class="btn-icon"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button id="autoBuildBtn" class="btn btn-primary" style="width: 100%; margin-top: 4px; margin-bottom: 8px;">
+                    <i data-lucide="zap" class="btn-icon"></i>
+                    <span data-i18n="buildBtn">Zbuduj cały region (.pak + JSON)</span>
+                    <div class="spinner"></div>
+                </button>
+
+                <!-- Przyciski pojawiające się po bezbłędnym przemieleniu regionu -->
+                <button id="deployModsBtn" class="btn btn-deploy" style="width: 100%; margin-bottom: 8px; display: none;">
+                    <i data-lucide="send" class="btn-icon"></i>
+                    <span data-i18n="deployModsBtn">1. Kopiuj .pak do folderu Mods (Media\Mods)</span>
+                </button>
+
+                <button id="injectPrebuildBtn" class="btn btn-secondary" style="width: 100%; margin-bottom: 8px; display: none; border-color: rgba(59, 130, 246, 0.45); color: #93c5fd;">
+                    <i data-lucide="file-symlink" class="btn-icon"></i>
+                    <span data-i18n="injectPrebuildBtn">2. Wstrzyknij kontrakty do Prebuild (2 pliki JSON)</span>
+                </button>
+
+                <!-- ZWIJANA SZUFLADKA 1: Ścieżki Folderów -->
+                <details class="settings-drawer">
+                    <summary class="drawer-summary">
+                        <span><i data-lucide="folder-cog" class="drawer-icon"></i> <span data-i18n="drawerPathsTitle">Ścieżki Folderów (Wyjściowy / Mods / Prebuild)</span></span>
+                        <i data-lucide="chevron-down" class="drawer-chevron"></i>
+                    </summary>
+                    <div class="drawer-body">
+                        <div class="input-row">
+                            <small data-i18n="outputDirLabel">Lokalny folder wyjściowy:</small>
+                            <div class="input-with-picker">
+                                <input type="text" id="outputDirInput" class="text-input" />
+                                <button id="pickOutputDirBtn" class="btn btn-secondary btn-picker" title="Wybierz folder z komputera">
+                                    <i data-lucide="folder-search" class="btn-icon"></i>
+                                </button>
+                                <button id="openFolderBtn" class="btn btn-secondary btn-picker" title="Otwórz w Eksploratorze">
+                                    <i data-lucide="external-link" class="btn-icon"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="input-row">
+                            <small data-i18n="modsDirLabel">Folder Mods (Media\Mods):</small>
+                            <div class="input-with-picker">
+                                <input type="text" id="modsDirInput" class="text-input" />
+                                <button id="pickModsDirBtn" class="btn btn-secondary btn-picker" title="Wybierz folder Mods z komputera">
+                                    <i data-lucide="folder-search" class="btn-icon"></i>
+                                </button>
+                                <button id="openModsDirBtn" class="btn btn-secondary btn-picker" title="Otwórz folder Mods w Eksploratorze">
+                                    <i data-lucide="external-link" class="btn-icon"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="input-row" style="margin-bottom: 0;">
+                            <small data-i18n="prebuildDirLabel">Katalog Prebuild (Media\prebuild):</small>
+                            <div class="input-with-picker">
+                                <input type="text" id="prebuildDirInput" class="text-input" />
+                                <button id="pickPrebuildDirBtn" class="btn btn-secondary btn-picker" title="Wybierz katalog prebuild z komputera">
+                                    <i data-lucide="folder-search" class="btn-icon"></i>
+                                </button>
+                                <button id="openPrebuildDirBtn" class="btn btn-secondary btn-picker" title="Otwórz folder prebuild w Eksploratorze">
+                                    <i data-lucide="external-link" class="btn-icon"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <!-- ZWIJANA SZUFLADKA 2: Reguły Silnika & Auto-Fixy -->
+                <details class="settings-drawer">
+                    <summary class="drawer-summary">
+                        <span><i data-lucide="sliders" class="drawer-icon"></i> <span data-i18n="drawerRulesTitle">Reguły Silnika & Auto-Fixy (Domyślnie: Auto)</span></span>
+                        <i data-lucide="chevron-down" class="drawer-chevron"></i>
+                    </summary>
+                    <div class="drawer-body">
+                        <div class="input-row">
+                            <small data-i18n="zoneFilterLabel">Filtrowanie stref (zone_settings.json):</small>
+                            <select id="zoneFilterSelect" class="text-input">
+                                <option value="smart" data-i18n="filterSmart">Inteligentny (Task/Contract + Infrastruktura, bez Contestów)</option>
+                                <option value="strict" data-i18n="filterStrict">Ścisły (Wyłącznie strefy użyte w Task/Contract)</option>
+                                <option value="none" data-i18n="filterNone">Brak filtru (Kopiuj wszystkie strefy 1:1)</option>
+                            </select>
+                        </div>
+
+                        <div class="input-row">
+                            <small data-i18n="garageModeLabel">Obsługa ulepszanych garaży (UpgradeGarage):</small>
+                            <select id="garageModeSelect" class="text-input">
+                                <option value="disable_second_garage" data-i18n="garageOpt1">Auto-Safe: Wyłącz ulepszany garaż (0 błędów + brak zwiechy)</option>
+                                <option value="convert_to_normal" data-i18n="garageOpt2">Zamień ulepszany garaż na zwykły otwarty</option>
+                                <option value="keep_raw_false" data-i18n="garageOpt3">Zostaw oryginał 1:1 (initialState: false + EXIT)</option>
+                            </select>
+                        </div>
+
+                        <div class="extra-options active" style="margin-bottom: 0;">
+                            <label class="checkbox-row">
+                                <input type="checkbox" id="patchBinCb" checked>
+                                <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                                <span class="checkbox-text" data-i18n="patchBinLabel">Zmień 17. bajt w data_for_ssl.bin (0x01)</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" id="injectFilesCb" checked>
+                                <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                                <span class="checkbox-text" data-i18n="injectFilesLabel">Wstrzyknij 5 plików luzem do .pak</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" id="autoBlockerMapCb">
+                                <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                                <span class="checkbox-text" data-i18n="autoBlockerMapLabel">Auto-uzupełniaj blockerMap również z blockerObjectives</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" id="forceCacheCb">
+                                <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                                <span class="checkbox-text" data-i18n="forceCacheLabel">Wymuś wypakowanie initial.pak na nowo</span>
+                            </label>
+                        </div>
+                    </div>
+                </details>
+
+                <div class="status-panel" style="margin-top: 8px;">
+                    <div class="status-dot"></div>
+                    <span id="status" class="status-text" data-i18n="statusReady">Gotowy do pracy</span>
+                </div>
+            </section>
+
+            <section class="control-section stats-section">
+                <div class="section-header-row">
+                    <label class="section-label" style="margin-bottom: 0;" data-i18n="telemetrySection">Telemetria Regionu</label>
+                    <span id="economyBadge" class="economy-pill">$0 • 0 XP</span>
+                </div>
+                <div class="stats-grid selectable-text">
+                    <div class="stat-card">
+                        <span class="stat-val" id="statZones">0</span>
+                        <span class="stat-name" data-i18n="statZones">Zapisane Strefy</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-val" id="statFiltered">0</span>
+                        <span class="stat-name" data-i18n="statFiltered">Odrzucone Strefy</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-val" id="statTasks">0</span>
+                        <span class="stat-name" data-i18n="statTasks">Misje (Tasks)</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-val" id="statContracts">0</span>
+                        <span class="stat-name" data-i18n="statContracts">Kontrakty</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="control-section console-section">
+                <div class="section-header-row">
+                    <label class="section-label" style="margin-bottom: 0;" data-i18n="consoleSection">Logi Diagnostyczne</label>
+                    <button id="copyLogsBtn" class="btn btn-small btn-secondary">
+                        <i data-lucide="copy" style="width: 12px; height: 12px;"></i>
+                        <span data-i18n="copyLogsBtn">Kopiuj logi</span>
+                    </button>
+                </div>
+                <div class="console-box custom-scrollbar selectable-text" id="logsArea">
+                    <div class="log-item log-muted" data-i18n="waitingLogs">Wybierz region i kliknij Zbuduj...</div>
+                </div>
+            </section>
+        </div>
+    </aside>
+
+    <main class="workspace-v4">
+
+        <!-- Pasek kart zbudowanych map -->
+        <div id="mapsCardsArea" class="maps-strip selectable-text">
+            <div class="map-card">
+                <div class="map-card-header">
+                    <span data-i18n="noRegionBuilt">Brak zbudowanego regionu w tej sesji</span>
+                </div>
+                <div class="map-card-metrics" data-i18n="noRegionHint">
+                    Po zbudowaniu regionu zobaczysz tu podział stref, rozpoznaną Mapę Startową oraz symulację przejść między mapami.
+                </div>
+            </div>
+        </div>
+
+        <!-- Główny obszar wielofunkcyjny -->
+        <section class="editor" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+            <header class="editor-header" style="flex-wrap: wrap; gap: 10px;">
+                <div id="inspectorTabs" class="tabs-bar">
+                    <button class="tab-btn active" data-tab="contracts" data-i18n="tabContracts">Kontrakty [ ]</button>
+                    <button class="tab-btn" data-tab="contracts_unwrapped" data-i18n="tabContractsRaw">Kontrakty (bez [ ])</button>
+                    <button class="tab-btn tab-special" data-tab="modio_zip_view" data-i18n="tabModioZip">Mod.io ZIP Patcher (blockerMap)</button>
+                    <button class="tab-btn tab-special" data-tab="progression_view" data-i18n="tabProgression">Graf Przejść & Mapa Startowa</button>
+                    <button class="tab-btn tab-special" data-tab="compare_view" data-i18n="tabCompare">Porównaj z initial.cache_block</button>
+                    <button class="tab-btn tab-special" data-tab="audit_view" data-i18n="tabAudit">Audytor & Filtr Stref</button>
+                    <button class="tab-btn tab-special" data-tab="engine_search" data-i18n="tabEngineSearch">Szukaj w initial.cache_block</button>
+                </div>
+
+                <div class="toolbar-right" id="jsonToolbar">
+                    <input type="text" id="jsonSearchInput" class="text-input" data-i18n-placeholder="searchJsonPlaceholder" placeholder="Filtruj linie JSON..." style="width: 180px;" />
+                    <button id="downloadBtn" class="btn btn-small btn-secondary">
+                        <i data-lucide="download" class="btn-icon"></i> <span data-i18n="downloadBtn">Pobierz</span>
+                    </button>
+                    <button id="copyBtn" class="btn btn-small btn-secondary">
+                        <i data-lucide="copy" class="btn-icon"></i> <span data-i18n="copyBtn">Kopiuj</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Widok 1: Standardowy podgląd JSON -->
+            <div id="jsonViewPane" class="editor-body output-bg selectable-text" style="flex: 1; overflow: auto;">
+                <pre id="jsonOutput" class="code-area custom-scrollbar json-viewer"></pre>
+            </div>
+
+            <!-- Widok 2: Mod.io ZIP BlockerMap Patcher -->
+            <div id="modioZipViewPane" class="editor-body output-bg custom-scrollbar selectable-text" style="display: none; flex: 1; overflow: auto; padding: 18px 22px;">
+                <div class="audit-container">
+                    <div class="audit-block" style="background: var(--bg-surface); padding: 16px 18px; border-radius: 10px; border: 1px solid var(--border-default);">
+                        <h3 data-i18n="modioPatcherTitle">Konwerter blockerMap wewnątrz spakowanego pliku .zip (Lokalny ⇄ Mod.io)</h3>
+                        <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5;" data-i18n="modioPatcherDesc">
+                            Narzędzie otwiera wybrany plik .zip (np. z folderu Media\Mods) bez konieczności ręcznego wypakowywania, odczytuje plik objective_settings.json i podmienia wyłącznie te pola blockerMap, które faktycznie są już wypełnione w pliku (np. "~#@%$`*level_us_16_02~#@%$`*" ➔ "5267880_level_us_16_02").
+                        </p>
+
+                        <div style="display: grid; grid-template-columns: 1fr 220px; gap: 12px; margin-bottom: 12px;">
+                            <div class="input-row" style="margin-bottom: 0;">
+                                <small data-i18n="selectZipLabel">Wybierz plik .zip z folderu Mods lub wskaż ręcznie z dysku:</small>
+                                <div class="input-with-picker">
+                                    <select id="modZipSelect" class="text-input" style="max-width: 240px;"></select>
+                                    <input type="text" id="modZipPathInput" class="text-input" placeholder="C:\...\Media\Mods\twoj_mod.zip" style="flex: 1;" />
+                                    <button id="pickZipFileBtn" class="btn btn-secondary btn-picker" title="Wybierz plik .zip z komputera">
+                                        <i data-lucide="file-archive" class="btn-icon"></i> <span data-i18n="browseZipBtn">Wybierz .zip...</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="input-row" style="margin-bottom: 0;">
+                                <small data-i18n="modioIdLabel">ID projektu z Mod.io (np. 5267880):</small>
+                                <input type="text" id="modioIdInput" class="text-input" placeholder="np. 5267880" />
+                            </div>
+                        </div>
+
+                        <label class="checkbox-row" style="margin-bottom: 14px;">
+                            <input type="checkbox" id="extractJsonBesideZipCb">
+                            <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                            <span class="checkbox-text" data-i18n="extractBesideLabel">Dodatkowo wypakuj zmodyfikowany plik objective_settings.json luzem obok pliku .zip (do podglądu)</span>
+                        </label>
+
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                            <button id="scanZipBlockerBtn" class="btn btn-secondary">
+                                <i data-lucide="search" class="btn-icon"></i>
+                                <span data-i18n="scanZipBtn">1. Skanuj blockerMap w pliku .zip (Podgląd)</span>
+                            </button>
+
+                            <button id="applyModioZipBtn" class="btn btn-primary">
+                                <i data-lucide="upload-cloud" class="btn-icon"></i>
+                                <span data-i18n="applyModioZipBtn">2. Zapisz w .zip format Mod.io (ID_level_...)</span>
+                            </button>
+
+                            <button id="revertLocalZipBtn" class="btn btn-secondary" style="border-color: rgba(16, 185, 129, 0.4); color: #34d399;">
+                                <i data-lucide="rotate-ccw" class="btn-icon"></i>
+                                <span data-i18n="revertLocalZipBtn">Przywróć w .zip format Lokalny (~#@%$`*level_...)</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="modioZipResultsArea" class="audit-block">
+                        <div class="audit-pass" data-i18n="modioScanHint">Wybierz plik .zip powyżej i kliknij "Skanuj blockerMap w pliku .zip", aby zobaczyć wszystkie niepuste pola blockerMap przed ich podmianą.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Widok 3: Graf Przejść & Mapa Startowa -->
+            <div id="progressionViewPane" class="editor-body output-bg custom-scrollbar selectable-text" style="display: none; flex: 1; overflow: auto; padding: 18px 22px;">
+                <div id="progressionContentArea" class="audit-container">
+                    <div class="audit-pass">Wybierz region w lewym panelu i kliknij <b>"Zbuduj cały region (.pak + JSON)"</b>, aby wygenerować analizę Mapy Startowej, Garaży, Bram (Gateways) i symulację przejść między mapami.</div>
+                </div>
+            </div>
+
+            <!-- Widok 4: Porównywarka Side-by-Side -->
+            <div id="compareViewPane" class="editor-body output-bg selectable-text" style="display: none; flex: 1; flex-direction: column; overflow: hidden;">
+                <div class="sub-toolbar">
+                    <span class="sub-toolbar-label" data-i18n="selectObjectToCompare">Wybierz obiekt (Misję / Kontrakt / Strefę):</span>
+                    <select id="compareItemSelect" class="text-input" style="max-width: 420px;"></select>
+                    <input type="text" id="compareFilterInput" class="text-input" data-i18n-placeholder="filterObjectPlaceholder" placeholder="Szukaj po nazwie obiektu..." style="width: 220px;" />
+                </div>
+                <div class="split-compare-grid">
+                    <div class="split-pane">
+                        <div class="split-pane-header">
+                            <span data-i18n="rawEngineCodeHeader">Oryginał z silnika (initial.cache_block)</span>
+                            <button id="copyRawEngineBtn" class="btn btn-small btn-secondary"><i data-lucide="copy" class="btn-icon"></i> Copy Raw</button>
+                        </div>
+                        <pre id="compareRawOutput" class="code-area custom-scrollbar"></pre>
+                    </div>
+                    <div class="split-pane">
+                        <div class="split-pane-header">
+                            <span data-i18n="compiledJsonHeader">Przekonwertowany wynik (JSON)</span>
+                            <button id="copyCompiledCompareBtn" class="btn btn-small btn-secondary"><i data-lucide="copy" class="btn-icon"></i> Copy JSON</button>
+                        </div>
+                        <pre id="compareJsonOutput" class="code-area custom-scrollbar"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Widok 5: Audytor Modu -->
+            <div id="auditViewPane" class="editor-body output-bg custom-scrollbar selectable-text" style="display: none; flex: 1; overflow: auto; padding: 18px 22px;">
+                <div id="auditContentArea" class="audit-container">
+                    <div class="audit-pass">Wybierz region i kliknij <b>"Zbuduj cały region (.pak + JSON)"</b>, aby zobaczyć raport Audytora.</div>
+                </div>
+            </div>
+
+            <!-- Widok 6: Bezpośrednia wyszukiwarka w całym initial.cache_block -->
+            <div id="engineSearchPane" class="editor-body output-bg selectable-text" style="display: none; flex: 1; flex-direction: column; overflow: hidden;">
+                <div class="sub-toolbar">
+                    <input type="text" id="engineQueryInput" class="text-input" data-i18n-placeholder="engineSearchPlaceholder" placeholder="Wpisz nazwę bloku w initial.cache_block (np. US_19_03_GEOLOGICAL lub RU_05_01)..." style="flex: 1; max-width: 480px;" />
+                    <button id="engineSearchBtn" class="btn btn-small btn-primary">
+                        <i data-lucide="search" class="btn-icon"></i> <span data-i18n="searchEngineBtn">Szukaj w initial.cache_block</span>
+                    </button>
+                    <select id="engineMatchesSelect" class="text-input" style="max-width: 340px;"></select>
+                </div>
+                <pre id="engineSearchOutput" class="code-area custom-scrollbar" style="flex: 1;"></pre>
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<script>
+    lucide.createIcons();
+</script>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
