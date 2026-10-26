@@ -3,6 +3,7 @@ import { modFreezeTrailers } from "./stringToNumber.js";
 
 class Helper {
     constructor() {
+        // Dokładnie 8 oryginalnych właściwości (bez ZonePropertyObjectiveZoneToVisit, które w JSON ma dawać puste props: {})
         this.onlyTypeProps = [
             "ZonePropertyManualLoading",
             "ZonePropertyTrailerAttach",
@@ -11,8 +12,7 @@ class Helper {
             "ZonePropertyEnergy",
             "ZonePropertyAutoRefuel",
             "ZonePropertyGatewayOut",
-            "ZonePropertyFarmingArea",
-            "ZonePropertyObjectiveZoneToVisit"
+            "ZonePropertyFarmingArea"
         ];
         this.nullCounter = 0;
         this.warnings = [];
@@ -26,6 +26,20 @@ class Helper {
 
     addDiagnostic(level, tag, message) {
         this.diagnostics.push({ level, tag, message });
+    }
+
+    /**
+     * Bezpieczna konwersja liczb z initial.cache_block (gdzie wartość 0 bywa zapisana jako puste {})
+     */
+    toNum(v, fallback = 0) {
+        if (typeof v === 'number' && !Number.isNaN(v)) return v;
+        if (typeof v === 'object' && v !== null) {
+            if (typeof v.__value === 'number') return v.__value;
+            return fallback;
+        }
+        if (v === undefined || v === null || v === '') return fallback;
+        const n = Number(v);
+        return Number.isNaN(n) ? fallback : n;
     }
 
     createTracker(src, contextName) {
@@ -45,7 +59,7 @@ class Helper {
         const check = () => {
             if (unusedKeys.size > 0) {
                 const keysList = Array.from(unusedKeys).join(', ');
-                const warningMsg = `[${contextName}]: Zignorowano nieznane pole -> ${keysList}`;
+                const warningMsg = `[${contextName}]: Zignorowano -> ${keysList}`;
                 console.warn(warningMsg);
                 this.warnings.push(warningMsg);
             }
@@ -70,12 +84,14 @@ class Helper {
     }
 
     formatLevelName(levelName) {
-        if (!levelName) return "";
-        return "~#@%$`*" + levelName + "~#@%$`*";
+        if (!levelName || typeof levelName !== 'string') return "";
+        const clean = levelName.replace(/~#@%\$`\*/g, '').trim();
+        if (!clean) return "";
+        return "~#@%$`*" + clean + "~#@%$`*";
     }
 
     formatGlobalZoneId(zoneId) {
-        if (!zoneId) return "";
+        if (!zoneId || typeof zoneId !== 'string') return "";
         if (zoneId.includes('||')) {
             const parts = zoneId.split('||');
             const level = parts[0].trim();
@@ -86,17 +102,17 @@ class Helper {
     }
 
     modJingleSett(jingleSett) {
-        return this.isNulled(jingleSett) ? null : {
+        return (!jingleSett || this.isNulled(jingleSett)) ? null : {
             "$type": "ObjectiveJingleSettings",
             "overrideJingleName": jingleSett.overrideJingleName || "",
-            "playJingleWithCinematic": jingleSett.playJingleWithCinematic || false
+            "playJingleWithCinematic": Boolean(jingleSett.playJingleWithCinematic)
         };
     }
 
     transformZoneId(srcZoneId) {
-        if (!srcZoneId || this.isNulled(srcZoneId) || !srcZoneId.globalZoneId)
+        if (!srcZoneId || this.isNulled(srcZoneId) || !srcZoneId.globalZoneId) {
             return null;
-
+        }
         return {
             "$type": "ZoneGlobalIdentificator",
             "globalZoneId": this.formatGlobalZoneId(srcZoneId.globalZoneId)
@@ -104,17 +120,17 @@ class Helper {
     }
 
     modPlatformOverride(platformColorOverride) {
-        return this.isNulled(platformColorOverride) ? null : {
+        return (!platformColorOverride || this.isNulled(platformColorOverride)) ? null : {
             "$type": "Color",
-            "a": platformColorOverride.a || 0,
-            "b": platformColorOverride.b || 0,
-            "g": platformColorOverride.g || 0,
-            "r": platformColorOverride.r || 0
+            "a": this.toNum(platformColorOverride.a, 0),
+            "b": this.toNum(platformColorOverride.b, 0),
+            "g": this.toNum(platformColorOverride.g, 0),
+            "r": this.toNum(platformColorOverride.r, 0)
         };
     }
 
     transformFreezeTrailer(freezeTrailer) {
-        return this.isNulled(freezeTrailer) ? null : {
+        return (!freezeTrailer || this.isNulled(freezeTrailer)) ? null : {
             "$type": "TrailerFreezeSettings",
             "animationId": freezeTrailer.animationId || "",
             "trailerId": freezeTrailer.trailerId || "",

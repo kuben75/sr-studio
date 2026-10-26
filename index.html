@@ -121,9 +121,10 @@
                 </details>
 
                 <!-- ZWIJANA SZUFLADKA 2: Reguły Silnika & Auto-Fixy -->
-                <details class="settings-drawer">
+                <!-- ZWIJANA SZUFLADKA 2: Reguły Silnika & Auto-Fixy -->
+                <details class="settings-drawer" open>
                     <summary class="drawer-summary">
-                        <span><i data-lucide="sliders" class="drawer-icon"></i> <span data-i18n="drawerRulesTitle">Reguły Silnika & Auto-Fixy (Domyślnie: Auto)</span></span>
+                        <span><i data-lucide="sliders" class="drawer-icon"></i> <span data-i18n="drawerRulesTitle">Reguły Silnika & Auto-Fixy</span></span>
                         <i data-lucide="chevron-down" class="drawer-chevron"></i>
                     </summary>
                     <div class="drawer-body">
@@ -137,11 +138,22 @@
                         </div>
 
                         <div class="input-row">
-                            <small data-i18n="garageModeLabel">Obsługa ulepszanych garaży (UpgradeGarage):</small>
+                            <small data-i18n="garageModeLabel">Obsługa ulepszanych garaży i GARAGE_EXIT:</small>
                             <select id="garageModeSelect" class="text-input">
-                                <option value="disable_second_garage" data-i18n="garageOpt1">Auto-Safe: Wyłącz ulepszany garaż (0 błędów + brak zwiechy)</option>
-                                <option value="convert_to_normal" data-i18n="garageOpt2">Zamień ulepszany garaż na zwykły otwarty</option>
-                                <option value="keep_raw_false" data-i18n="garageOpt3">Zostaw oryginał 1:1 (initialState: false + EXIT)</option>
+                                <option value="remap_to_pak">Auto-JSON Fix: Użyj nazwy EXIT z .pak w JSON (np. US_16_02_GARAGE_EXIT, bez edycji .bin!)</option>
+                                <option value="disable_second_garage">Auto-Safe: Wyłącz 2. garaż i usuń brakujący GARAGE_EXIT z JSON</option>
+                                <option value="convert_to_normal">Zamień 2. garaż na zwykły otwarty (+ dopasuj nazwę EXIT z .pak w JSON)</option>
+                                <option value="keep_raw_false">Zostaw oryginał 1:1 z initial.cache_block (tylko do testów)</option>
+                            </select>
+                        </div>
+
+                        <div class="input-row">
+                            <small data-i18n="compatModeLabel">Tryb kompatybilności / Bisekcja (gdy gra wisi na 100%):</small>
+                            <select id="compatModeSelect" class="text-input">
+                                <option value="normal">1. Pełny oryginał (Wszystkie strefy, MiniObjectives, Taski i Kontrakty)</option>
+                                <option value="no_mini_objectives">2. Bez MiniObjectives w strefach (Usuwa ZonePropertyMiniObjective*)</option>
+                                <option value="no_contracts">3. Diagnostyka: Strefy + Taski (0 Kontraktów)</option>
+                                <option value="zones_only">4. Diagnostyka: Tylko Strefy (0 Tasków, 0 Kontraktów - test samych map)</option>
                             </select>
                         </div>
 
@@ -149,7 +161,12 @@
                             <label class="checkbox-row">
                                 <input type="checkbox" id="patchBinCb" checked>
                                 <span class="checkbox-ui"><i data-lucide="check"></i></span>
-                                <span class="checkbox-text" data-i18n="patchBinLabel">Zmień 17. bajt w data_for_ssl.bin (0x01)</span>
+                                <span class="checkbox-text" data-i18n="patchBinLabel">Zmień tylko 17. bajt w data_for_ssl.bin (0x01)</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" id="patchBinStringsCb">
+                                <span class="checkbox-ui"><i data-lucide="check"></i></span>
+                                <span class="checkbox-text" style="color: #fca5a5;">Eksperymentalnie: Nadpisuj nazwy stref wewnątrz data_for_ssl.bin (Domyślnie WYŁ. - tylko skan do logów)</span>
                             </label>
                             <label class="checkbox-row">
                                 <input type="checkbox" id="injectFilesCb" checked>
@@ -204,10 +221,16 @@
             <section class="control-section console-section">
                 <div class="section-header-row">
                     <label class="section-label" style="margin-bottom: 0;" data-i18n="consoleSection">Logi Diagnostyczne</label>
-                    <button id="copyLogsBtn" class="btn btn-small btn-secondary">
-                        <i data-lucide="copy" style="width: 12px; height: 12px;"></i>
-                        <span data-i18n="copyLogsBtn">Kopiuj logi</span>
-                    </button>
+                    <div style="display: flex; gap: 6px;">
+                        <button id="checkGameLogsBtn" class="btn btn-small btn-secondary" title="Odczytaj ModMapError.txt i logi SnowRunnera z dokumentów">
+                            <i data-lucide="file-warning" style="width: 12px; height: 12px;"></i>
+                            <span>Logi Gry</span>
+                        </button>
+                        <button id="copyLogsBtn" class="btn btn-small btn-secondary">
+                            <i data-lucide="copy" style="width: 12px; height: 12px;"></i>
+                            <span data-i18n="copyLogsBtn">Kopiuj logi</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="console-box custom-scrollbar selectable-text" id="logsArea">
                     <div class="log-item log-muted" data-i18n="waitingLogs">Wybierz region i kliknij Zbuduj...</div>

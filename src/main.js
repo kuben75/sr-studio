@@ -243,6 +243,11 @@ class StudioApp {
         this.engineSearchBtn = document.getElementById('engineSearchBtn');
         this.engineMatchesSelect = document.getElementById('engineMatchesSelect');
         this.engineSearchOutput = document.getElementById('engineSearchOutput');
+        // W bindDOM() dopisz na końcu:
+        this.patchBinStringsCb = document.getElementById('patchBinStringsCb');
+        this.garageModeSelect = document.getElementById('garageModeSelect');
+        this.compatModeSelect = document.getElementById('compatModeSelect');
+        this.checkGameLogsBtn = document.getElementById('checkGameLogsBtn');
     }
 
     setupEvents() {
@@ -323,9 +328,29 @@ class StudioApp {
         });
         this.engineMatchesSelect.addEventListener('change', () => this.renderSelectedEngineMatch());
 
+        if (this.checkGameLogsBtn) {
+            this.checkGameLogsBtn.addEventListener('click', () => this.handleCheckGameLogs());
+        }
         this.bindTabClicks();
     }
+    async handleCheckGameLogs() {
+        try {
+            const res = await fetch('/api/game-logs');
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error);
 
+            if (!this.lastResult) {
+                this.lastResult = { logs: [] };
+            }
+            for (const entry of data.logs) {
+                this.lastResult.logs.push(entry);
+            }
+            this.renderLogs(this.lastResult);
+            this.showStatus('Wczytano logi diagnostyczne gry SnowRunner', 'success');
+        } catch (err) {
+            this.showStatus(`Błąd odczytu logów gry: ${err.message}`, 'error');
+        }
+    }
     async handlePickZipFile() {
         try {
             const res = await fetch('/api/pick-zip', {
@@ -482,7 +507,8 @@ class StudioApp {
                 body: JSON.stringify({
                     prebuildDir,
                     projectName,
-                    contractsFilePath: this.lastResult.contractsFilePath
+                    contractsFilePath: this.lastResult.contractsFilePath,
+                    allTasksFilePath: this.lastResult.allTasksFilePath
                 })
             });
             const data = await res.json();
@@ -492,7 +518,7 @@ class StudioApp {
                 time: data.time,
                 level: 'success',
                 tag: 'PREBUILD-INJECT',
-                message: `Wstrzyknięto ${data.injectedContractsCount} kontraktów do local_objective_settings.json oraz objective_settings.json (zachowano ${data.preservedTasksCount} złączonych tasków) w: ${data.projectDir}`
+                message: `Wstrzyknięto ${data.injectedContractsCount} kontraktów oraz zaktualizowano ${data.injectedTasksCount} tasków w: ${data.projectDir}`
             });
             this.renderLogs(this.lastResult);
             this.showStatus(`${I18N[this.lang].injectPrebuildSuccess} (${projectName})`, 'success');
@@ -665,11 +691,13 @@ class StudioApp {
                     region,
                     outputBaseDir,
                     patchBin: this.patchBinCb.checked,
+                    patchBinStrings: Boolean(this.patchBinStringsCb?.checked),
                     injectFiles: this.injectFilesCb.checked,
                     autoInferBlockerMap: this.autoBlockerMapCb.checked,
                     forceCacheRefresh: this.forceCacheCb.checked,
                     zoneFilterMode: this.zoneFilterSelect.value,
-                    garageMode: document.getElementById('garageModeSelect')?.value || 'disable_second_garage'
+                    garageMode: this.garageModeSelect?.value || 'remap_to_pak',
+                    compatMode: this.compatModeSelect?.value || 'normal'
                 })
             });
             const data = await res.json();

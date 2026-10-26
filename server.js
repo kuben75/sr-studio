@@ -1,4 +1,4 @@
-// server.js (v7.5 - Binary .pak Zone Auto-Matcher & Full ModMapError Fix)
+// server.js (v7.6 - In-Pak Binary String Patcher & Null-Prop Guard)
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -191,7 +191,7 @@ function isActiveProp(propObj) {
     return Boolean(propObj && typeof propObj === 'object' && propObj.__type !== 'null');
 }
 
-// Skrypt PowerShell wyciągający WSZYSTKIE fizyczne identyfikatory stref (np. US_16_02_GARAGE_EXIT, US_19_02_...) z wnętrza pliku .pak
+// Skanuje wszystkie wpisy wewnątrz pliku .pak i zwraca fizyczne identyfikatory stref + nazwę pliku, w którym leżą
 const PS_SCAN_ALL_PAK_ZONES = `
 param([Parameter(Mandatory=$true)][string]$PakPath)
 $ErrorActionPreference = 'Stop'
@@ -203,7 +203,7 @@ $found = New-Object System.Collections.Generic.HashSet[string]
 
 try {
     foreach ($entry in $zip.Entries) {
-        if ($entry.Length -gt 0 -and $entry.Length -lt 20000000) {
+        if ($entry.Length -gt 0 -and $entry.Length -lt 25000000) {
             $stream = $entry.Open()
             $ms = New-Object System.IO.MemoryStream
             $stream.CopyTo($ms)
@@ -234,9 +234,143 @@ function getPhysicalZonesFromPak(pakPath) {
             if (!rawList) return new Set();
             return new Set(rawList.split(',').map(s => s.trim()).filter(Boolean));
         }
-    } catch {}
+    } catch (err) {
+        console.error('Błąd PS_SCAN_ALL_PAK_ZONES:', err);
+    }
     return new Set();
 }
+
+
+// W server.js - podmień stałą PS_INJECT_AND_PATCH na tę czystą wersję bajtową:
+const PS_INJECT_AND_PATCH = `
+param(
+    [Parameter(Mandatory=$true)][string]$TargetPak,
+    [Parameter(Mandatory=$true)][string]$DonorDir,
+    [int]$FlipOffset = 16,
+    [string]$PatchBin = "true",
+    [string]$InjectFiles = "true",
+    [string]$BinaryRenames = ""
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$donorFiles = @(
+    'zone_settings.json',
+    'objective_settings.json',
+    'content_settings.json',
+    'level_desc.json',
+    'user_name_of_map.txt'
+)
+
+$zip = [System.IO.Compression.ZipFile]::Open($TargetPak, [System.IO.Compression.ZipArchiveMode]::Update)
+$oldHex = "SKIP"
+$injectedCount = 0
+$patchedEntries = @()
+
+try {
+    if ($PatchBin -eq "true") {
+        $sslEntry = $null
+        foreach ($entry in $zip.Entries) {
+            if ($entry.FullName.ToLower().EndsWith('data_for_ssl.bin')) {
+                $sslEntry = $entry
+                break
+            }
+        }
+
+        if (-not $sslEntry) {
+            throw "W pliku .pak nie znaleziono data_for_ssl.bin!"
+        }
+
+        $sslFullName = $sslEntry.FullName
+        $sslStream = $sslEntry.Open()
+        $sslMs = New-Object System.IO.MemoryStream
+        $sslStream.CopyTo($sslMs)
+        $sslStream.Close()
+        $sslBytes = $sslMs.ToArray()
+        $sslMs.Close()
+
+        if ($sslBytes.Length -le $FlipOffset) {
+            throw "Plik data_for_ssl.bin jest za krótki ($($sslBytes.Length) B)!"
+        }
+
+        $oldByte = $sslBytes[$FlipOffset]
+        $oldHex = "0x" + $oldByte.ToString("X2")
+        $sslBytes[$FlipOffset] = 1
+
+        # Bezpośrednia podmiana sekwencji bajtów ASCII w tablicy byte[] (np. US_16_02_GARAGE_EXIT -> US_19_02_GARAGE_EXIT)
+        if (-not [string]::IsNullOrWhiteSpace($BinaryRenames)) {
+            $pairs = $BinaryRenames.Split(';')
+            foreach ($pair in $pairs) {
+                if ([string]::IsNullOrWhiteSpace($pair)) { continue }
+                $parts = $pair.Split('=')
+                if ($parts.Length -ne 2) { continue }
+                $oldBytes = [System.Text.Encoding]::ASCII.GetBytes($parts[0])
+                $newBytes = [System.Text.Encoding]::ASCII.GetBytes($parts[1])
+                if ($oldBytes.Length -ne $newBytes.Length -or $oldBytes.Length -eq 0) { continue }
+
+                $patLen = $oldBytes.Length
+                $limit = $sslBytes.Length - $patLen
+                for ($i = 0; $i -le $limit; $i++) {
+                    if ($sslBytes[$i] -eq $oldBytes[0]) {
+                        $match = $true
+                        for ($j = 1; $j -lt $patLen; $j++) {
+                            if ($sslBytes[$i + $j] -ne $oldBytes[$j]) {
+                                $match = $false
+                                break
+                            }
+                        }
+                        if ($match) {
+                            for ($j = 0; $j -lt $patLen; $j++) {
+                                $sslBytes[$i + $j] = $newBytes[$j]
+                            }
+                            $patchedEntries += "$sslFullName@0x$($i.ToString('X'))($($parts[0])->$($parts[1]))"
+                        }
+                    }
+                }
+            }
+        }
+
+        $sslEntry.Delete()
+        $newSslEntry = $zip.CreateEntry($sslFullName, [System.IO.Compression.CompressionLevel]::NoCompression)
+        $newSslStream = $newSslEntry.Open()
+        $newSslStream.Write($sslBytes, 0, $sslBytes.Length)
+        $newSslStream.Close()
+    }
+
+    if ($InjectFiles -eq "true") {
+        foreach ($fileName in $donorFiles) {
+            $localFilePath = Join-Path $DonorDir $fileName
+            if (-not (Test-Path $localFilePath)) {
+                throw "Brak wygenerowanego pliku: $localFilePath"
+            }
+
+            $toRemove = @()
+            foreach ($e in $zip.Entries) {
+                if ($e.Name.ToLower() -eq $fileName.ToLower()) {
+                    $toRemove += $e
+                }
+            }
+            foreach ($rem in $toRemove) {
+                $rem.Delete()
+            }
+
+            $fileBytes = [System.IO.File]::ReadAllBytes($localFilePath)
+            $newEntry = $zip.CreateEntry($fileName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $newStream = $newEntry.Open()
+            $newStream.Write($fileBytes, 0, $fileBytes.Length)
+            $newStream.Close()
+            $injectedCount++
+        }
+    }
+} finally {
+    $zip.Dispose()
+}
+
+$patchedJoined = $patchedEntries -join ','
+Write-Output "SUCCESS:$($injectedCount):$($oldHex):$($patchedJoined)"
+`;
 
 function analyzeRegionProgression(mapNames, mapData, contractsParsed) {
     const mapsInfo = {};
@@ -651,100 +785,6 @@ function analyzeRegionProgression(mapNames, mapData, contractsParsed) {
     };
 }
 
-const PS_INJECT_AND_PATCH = `
-param(
-    [Parameter(Mandatory=$true)][string]$TargetPak,
-    [Parameter(Mandatory=$true)][string]$DonorDir,
-    [int]$FlipOffset = 16,
-    [string]$PatchBin = "true",
-    [string]$InjectFiles = "true"
-)
-
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-$donorFiles = @(
-    'zone_settings.json',
-    'objective_settings.json',
-    'content_settings.json',
-    'level_desc.json',
-    'user_name_of_map.txt'
-)
-
-$zip = [System.IO.Compression.ZipFile]::Open($TargetPak, [System.IO.Compression.ZipArchiveMode]::Update)
-$oldHex = "SKIP"
-$injectedCount = 0
-
-try {
-    if ($PatchBin -eq "true") {
-        $sslEntry = $null
-        foreach ($entry in $zip.Entries) {
-            if ($entry.FullName.ToLower().EndsWith('data_for_ssl.bin')) {
-                $sslEntry = $entry
-                break
-            }
-        }
-
-        if (-not $sslEntry) {
-            throw "W pliku .pak nie znaleziono data_for_ssl.bin!"
-        }
-
-        $sslFullName = $sslEntry.FullName
-        $sslStream = $sslEntry.Open()
-        $sslMs = New-Object System.IO.MemoryStream
-        $sslStream.CopyTo($sslMs)
-        $sslStream.Close()
-        $sslBytes = $sslMs.ToArray()
-        $sslMs.Close()
-
-        if ($sslBytes.Length -le $FlipOffset) {
-            throw "Plik data_for_ssl.bin jest za krótki ($($sslBytes.Length) B)!"
-        }
-
-        $oldByte = $sslBytes[$FlipOffset]
-        $oldHex = "0x" + $oldByte.ToString("X2")
-        $sslBytes[$FlipOffset] = 1
-
-        $sslEntry.Delete()
-        $newSslEntry = $zip.CreateEntry($sslFullName, [System.IO.Compression.CompressionLevel]::NoCompression)
-        $newSslStream = $newSslEntry.Open()
-        $newSslStream.Write($sslBytes, 0, $sslBytes.Length)
-        $newSslStream.Close()
-    }
-
-    if ($InjectFiles -eq "true") {
-        foreach ($fileName in $donorFiles) {
-            $localFilePath = Join-Path $DonorDir $fileName
-            if (-not (Test-Path $localFilePath)) {
-                throw "Brak wygenerowanego pliku: $localFilePath"
-            }
-
-            $toRemove = @()
-            foreach ($e in $zip.Entries) {
-                if ($e.Name.ToLower() -eq $fileName.ToLower()) {
-                    $toRemove += $e
-                }
-            }
-            foreach ($rem in $toRemove) {
-                $rem.Delete()
-            }
-
-            $fileBytes = [System.IO.File]::ReadAllBytes($localFilePath)
-            $newEntry = $zip.CreateEntry($fileName, [System.IO.Compression.CompressionLevel]::Optimal)
-            $newStream = $newEntry.Open()
-            $newStream.Write($fileBytes, 0, $fileBytes.Length)
-            $newStream.Close()
-            $injectedCount++
-        }
-    }
-} finally {
-    $zip.Dispose()
-}
-
-Write-Output "SUCCESS:$($injectedCount):$($oldHex)"
-`;
-
 const PS_PICK_FOLDER = `
 param([string]$InitialDir = "")
 Add-Type -AssemblyName System.Windows.Forms
@@ -1023,16 +1063,162 @@ function stripUpgradeGarageRewards(compiledMission, addLog) {
     }
 }
 
+function findPathsInJson(node, needle, curPath = '$', out = []) {
+    if (typeof node === 'string') {
+        if (node.toUpperCase().includes(needle)) out.push(`${curPath} = "${node}"`);
+    } else if (Array.isArray(node)) {
+        node.forEach((n, i) => findPathsInJson(n, needle, `${curPath}[${i}]`, out));
+    } else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+            if (k.toUpperCase().includes(needle)) out.push(`${curPath}.${k} (klucz)`);
+            findPathsInJson(v, needle, `${curPath}.${k}`, out);
+        }
+    }
+    return out;
+}
+function auditOutput(docs, addLog) {
+    const norm = s => String(s || '').replace(/~#@%\$`\*/g, '').trim().toLowerCase();
+    const definedByMap = new Set();
+    const definedAnyMap = new Set();
+
+    for (const [label, json] of docs) {
+        if (label.endsWith('/zones')) {
+            const mapKey = norm(label.split('/')[0]);
+            for (const z of (JSON.parse(json)?.SslValue?.zoneDesc || [])) {
+                definedByMap.add(`${mapKey}|${z.name}`);
+                definedAnyMap.add(z.name);
+            }
+        }
+    }
+
+    const seen = new Set();
+    const report = (tag, msg) => {
+        if (!seen.has(msg)) {
+            seen.add(msg);
+            addLog('warn', tag, msg);
+        }
+    };
+
+    const walk = (node, curPath, currentMapKey) => {
+        if (Array.isArray(node)) {
+            node.forEach((n, i) => {
+                if (n === null || n === undefined) {
+                    report('NULL-IN-ARRAY', `${curPath}[${i}]`);
+                } else {
+                    walk(n, `${curPath}[${i}]`, currentMapKey);
+                }
+            });
+        } else if (node && typeof node === 'object') {
+            if (node.mapId && node.zoneId && !definedByMap.has(`${norm(node.mapId)}|${node.zoneId}`)) {
+                report('DANGLING-REF', `${curPath}: ${node.mapId} || ${node.zoneId}`);
+            }
+            if (node.$type === 'ZonePropertyGateway' && !node.levelZoneLink) {
+                report('EMPTY-GATEWAY', curPath);
+            }
+            if (node.platformId && currentMapKey && !definedByMap.has(`${currentMapKey}|${node.platformId}`)) {
+                report('DANGLING-PLATFORM', `${curPath}.platformId = "${node.platformId}"`);
+            }
+            for (const [k, v] of Object.entries(node)) {
+                if (
+                    ['additionalTaskGivers', 'additionalUnloadZones', 'additionalDeliveryZones'].includes(k) &&
+                    Array.isArray(v)
+                ) {
+                    v.forEach((zName, idx) => {
+                        if (typeof zName === 'string' && !zName.includes('||') && !definedAnyMap.has(zName)) {
+                            report('DANGLING-LIST-ZONE', `${curPath}.${k}[${idx}] = "${zName}"`);
+                        }
+                    });
+                }
+                walk(v, `${curPath}.${k}`, currentMapKey);
+            }
+        } else if (typeof node === 'string' && node.includes('||')) {
+            const [lv, zn] = node.split('||').map(s => s.trim());
+            if (!definedByMap.has(`${norm(lv)}|${zn}`)) {
+                report('DANGLING-REF', `${curPath}: ${node}`);
+            }
+        }
+    };
+
+    for (const [label, json] of docs) {
+        const mapKey = label.includes('/') ? norm(label.split('/')[0]) : '';
+        walk(JSON.parse(json), label, mapKey);
+    }
+
+    if (seen.size === 0) {
+        addLog('success', 'STRUCT-AUDIT', 'Audyt strukturalny JSON: 0 pustych bram, 0 nulli w tablicach, 0 wiszących referencji stref!');
+    }
+}
+function inspectSnowRunnerLogs() {
+    const logs = [];
+    const pushLog = (level, tag, message) => logs.push({ time: formatTime(), level, tag, message });
+
+    const home = os.homedir();
+    const candidateDirs = [
+        'C:\\Users\\21Kuben\\OneDrive\\Dokumenty\\My Games\\SnowRunner\\base\\logs',
+        path.join(home, 'OneDrive', 'Dokumenty', 'My Games', 'SnowRunner', 'base', 'logs'),
+        path.join(home, 'OneDrive', 'Documents', 'My Games', 'SnowRunner', 'base', 'logs'),
+        path.join(home, 'Dokumenty', 'My Games', 'SnowRunner', 'base', 'logs'),
+        path.join(home, 'Documents', 'My Games', 'SnowRunner', 'base', 'logs'),
+        path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Saber', 'SnowRunner', 'storage', 'logs')
+    ];
+
+    const foundDirs = [...new Set(candidateDirs.filter(d => fs.existsSync(d)))];
+    if (foundDirs.length === 0) {
+        pushLog('warn', 'GAME-LOGS', 'Nie znaleziono katalogu base\\logs ani AppData\\Local\\Saber\\SnowRunner.');
+        return logs;
+    }
+
+    for (const dir of foundDirs) {
+        pushLog('info', 'GAME-LOGS', `Skanowanie katalogu logów gry: ${dir}`);
+        const modErrPath = path.join(dir, 'ModMapError.txt');
+        if (fs.existsSync(modErrPath)) {
+            const stat = fs.statSync(modErrPath);
+            const content = fs.readFileSync(modErrPath, 'utf8').trim();
+            if (!content) {
+                pushLog('success', 'MOD-MAP-ERROR', `Plik ModMapError.txt jest PUSTY (0 błędów walidatora)! Ostatnia modyfikacja: ${stat.mtime.toLocaleTimeString()}`);
+            } else {
+                const lines = content.split(/\r?\n/);
+                pushLog('warn', 'MOD-MAP-ERROR', `Wykryto ${lines.length} linii w ModMapError.txt (zmodyfikowano: ${stat.mtime.toLocaleTimeString()}):`);
+                lines.slice(-25).forEach(l => pushLog('warn', 'MOD-MAP-ERROR', l));
+            }
+        }
+
+        const files = fs.readdirSync(dir)
+            .filter(f => /\.(log|txt)$/i.test(f) && f.toLowerCase() !== 'modmaperror.txt')
+            .map(f => {
+                const full = path.join(dir, f);
+                return { name: f, full, mtimeMs: fs.statSync(full).mtimeMs };
+            })
+            .sort((a, b) => b.mtimeMs - a.mtimeMs)
+            .slice(0, 3);
+
+        for (const f of files) {
+            try {
+                const raw = fs.readFileSync(f.full, 'utf8');
+                const lines = raw.split(/\r?\n/).filter(Boolean);
+                const errLines = lines.filter(l => /error|assert|exception|fatal|crash|invalid|garage|ssl|deadlock|fail/i.test(l));
+                pushLog('info', f.name, `Ostatnie linie z ${f.name} (łącznie ${lines.length} linii, podejrzanych: ${errLines.length}):`);
+                errLines.slice(-15).forEach(l => pushLog('warn', f.name, l));
+                lines.slice(-10).forEach(l => pushLog('info', `${f.name}-TAIL`, l));
+            } catch (e) {
+                pushLog('warn', f.name, `Nie udało się odczytać: ${e.message}`);
+            }
+        }
+    }
+    return logs;
+}
 function buildRegionPipeline({
                                  region,
                                  gameDir,
                                  outputBaseDir,
                                  patchBin = true,
+                                 patchBinStrings = false,
                                  injectFiles = true,
                                  forceCacheRefresh = false,
                                  zoneFilterMode = 'smart',
                                  autoInferBlockerMap = false,
-                                 garageMode = 'keep_raw_false'
+                                 garageMode = 'remap_to_pak',
+                                 compatMode = 'normal'
                              }) {
     const logs = [];
     const addLog = (level, tag, message) => {
@@ -1054,14 +1240,18 @@ function buildRegionPipeline({
     const baseOutputDir = path.join(workBaseDir, normRegion);
     fs.mkdirSync(baseOutputDir, { recursive: true });
 
-    addLog('info', 'INIT', `SR Studio v7.5 — Rozpoczęto budowanie regionu ${normRegion}. Wykryto map: ${pakFiles.length}`);
-    addLog('info', 'DIR', `Lokalny katalog roboczy: ${baseOutputDir}`);
+    addLog(
+        'info',
+        'INIT',
+        `SR Studio v7.8 — Budowanie ${normRegion} | Garaż: ${garageMode} | Tryb: ${compatMode} | Edycja nazw w .bin: ${patchBinStrings ? 'WŁĄCZONA (Eksperymentalna)' : 'WYŁĄCZONA (Tylko diagnostyka)'}`
+    );
 
     const t0 = Date.now();
     const rawCacheText = getRawCacheBlockText(gameDir, workBaseDir, forceCacheRefresh);
     const lineCount = rawCacheText.split('\n').length;
     const sizeMb = (rawCacheText.length / 1048576).toFixed(2);
     const elapsedReadMs = Date.now() - t0;
+
     addLog('info', 'ENGINE', `Wczytano initial.cache_block (${sizeMb} MB, ${lineCount.toLocaleString()} linii) w ${elapsedReadMs} ms.`);
 
     const tExtract = Date.now();
@@ -1069,6 +1259,7 @@ function buildRegionPipeline({
     const extractor = new CacheBlockExtractor(rawCacheText);
     const { mapData, contractsParsed, missionUsedZones, contestUsedZones } = extractor.extractForRegion(normRegion, mapNames, zoneFilterMode);
     const elapsedExtractMs = Date.now() - tExtract;
+
     addLog('info', 'PARSER', `Wyodrębniono strukturę regionu w ${elapsedExtractMs} ms. Strefy w misjach: ${missionUsedZones.length} | Strefy w Contestach (wykluczane): ${contestUsedZones.length}`);
 
     const progressionReport = analyzeRegionProgression(mapNames, mapData, contractsParsed);
@@ -1091,7 +1282,11 @@ function buildRegionPipeline({
         }
     }
 
+    const regionKnownZones = new Set(mapNames.flatMap(m => mapData[m].rawZones.map(z => z.name)));
+    const stripZonePfx = (n) => n.replace(/^[A-Z]{2}_\d{2}_\d{2}_/i, '').toUpperCase();
+
     const allExportedZonesSet = new Set();
+    const allCompiledTasks = [];
     const mapsOutput = [];
     const builtPakPaths = [];
     const comparisonItems = [];
@@ -1108,9 +1303,21 @@ function buildRegionPipeline({
         const srcPakPath = path.join(gameDir, pakFile);
         const usesUpgradeGarage = upgradeGarageMapsSet.has(mapName);
 
-        // Skanujemy fizyczne identyfikatory stref wewnątrz pliku .pak (data_for_ssl.bin)
+        // Skanujemy fizyczne identyfikatory stref wewnątrz pliku .pak (w 100% bezinwazyjnie - tylko odczyt)
         const physicalPakZonesSet = getPhysicalZonesFromPak(srcPakPath);
-        const physicalPakZonesArray = Array.from(physicalPakZonesSet);
+        const prefix = currentMapData.shortCode + '_';
+        const foreignZonesInPak = [...physicalPakZonesSet].filter(
+            z => !z.toUpperCase().startsWith(prefix) && !z.toUpperCase().startsWith('MAP_TRANSITION_')
+        );
+
+        addLog(
+            'info',
+            'PAK-DIAG',
+            `[${pakFile}] Fizycznych stref w .pak: ${physicalPakZonesSet.size} | Obce prefiksy w binariach .pak: ${foreignZonesInPak.join(', ') || 'brak'}`
+        );
+
+        const binaryRenamePairsForPak = [];
+        const missingInPakDiagnostics = [];
 
         const userNameTxt = helperInstance.formatLevelName(mapName);
         const contentSettingsJson = JSON.stringify({
@@ -1137,61 +1344,134 @@ function buildRegionPipeline({
         const transformedZones = [];
 
         for (const zItem of currentMapData.zonesParsed) {
+
             const zProps = zItem.obj?.props || {};
             let finalZoneName = zItem.name;
 
-            // KLUCZOWY MECHANIZM NAPRAWY LITERÓWEK SABERA W PLIKACH .PAK (np. US_19_02_GARAGE_EXIT ➔ US_16_02_GARAGE_EXIT):
-            // Jeśli strefa z initial.cache_block (np. US_19_02_GARAGE_EXIT) NIE istnieje fizycznie w pliku .pak,
-            // sprawdzamy, czy w pliku .pak istnieje strefa o tej samej końcówce skopiowana z innego regionu (np. US_16_02_GARAGE_EXIT)!
-            if (physicalPakZonesSet.size > 0 && !physicalPakZonesSet.has(finalZoneName)) {
-                const suffixMatch = finalZoneName.match(/^[A-Z]{2}_\d{2}_\d{2}_(.+)$/i);
-                if (suffixMatch) {
-                    const zoneSuffix = suffixMatch[1].toUpperCase(); // np. "GARAGE_EXIT"
-                    const candidateInPak = physicalPakZonesArray.find(
-                        pz => pz.toUpperCase().endsWith('_' + zoneSuffix) && !currentMapData.rawZones.some(rz => rz.name === pz)
-                    );
+            const HARDCODED_PHANTOM_ZONES = new Set([
+                'US_19_01_TEST_CAM',
+                'US_19_01_TEST_CAM_GIVER',
+                'US_19_01_MINI_BRIDGE_02_A',
+                'US_19_01_MINI_BRIDGE_02_B',
+                'US_19_02_REPAIR_BRIDGE_01_A_TASK',
+                'US_19_02_REPAIR_BRIDGE_01_B_TASK',
+                'US_19_02_REPAIR_BRIDGE_02_A_TASK',
+                'US_19_02_REPAIR_BRIDGE_02_B_TASK',
+                'US_19_02_REPAIR_BRIDGE_03_B_TASK',
+                'US_19_02_REPAIR_BRIDGE_03_A_TASK',
+                'US_19_02_COURIER_09',
+                'US_19_03_SCIENCE_TRAILER_BLOKER_02'
+            ]);
 
-                    if (candidateInPak) {
-                        addLog(
-                            'info',
-                            'PAK-AUTO-RENAME',
-                            `[${pakFile}] Wykryto literówkę Sabera w .pak! Strefa "${finalZoneName}" z initial.cache_block wewnątrz pliku .pak nazywa się fizycznie "${candidateInPak}" -> automatycznie podmieniono nazwę w zone_settings.json!`
-                        );
-                        finalZoneName = candidateInPak;
-                    }
-                }
+            if (HARDCODED_PHANTOM_ZONES.has(finalZoneName)) {
+                addLog('info', 'PHANTOM-DROP', `[${mapName}] Pominięto strefę-widmo (nieobecną na scenie 3D): ${finalZoneName}`);
+                continue;
             }
 
-            // Opcjonalna zamiana ulepszanego garażu na zwykły otwarty garaż (jeśli użytkownik wybrał convert_to_normal)
-            if (usesUpgradeGarage && garageMode === 'convert_to_normal' && isActiveProp(zProps.ZonePropertyGarageEntrance)) {
-                const openGarageZone = {
-                    "$type": "ZoneSettings",
-                    "isForCoop": false,
-                    "name": finalZoneName,
-                    "props": {
-                        "ZonePropertyGarageEntrance": {
-                            "$type": "ZonePropertyGarageEntrance"
-                        }
+            const existsInPak = physicalPakZonesSet.size === 0 || physicalPakZonesSet.has(finalZoneName);
+            let matchedForeignZoneInPak = null;
+
+            if (!existsInPak) {
+                const cands = [...physicalPakZonesSet].filter(
+                    pz => !regionKnownZones.has(pz) && stripZonePfx(pz) === stripZonePfx(finalZoneName)
+                );
+                if (cands.length === 1) {
+                    matchedForeignZoneInPak = cands[0];
+                }
+                missingInPakDiagnostics.push(
+                    matchedForeignZoneInPak
+                        ? `${finalZoneName} (w .pak istnieje odpowiednik: ${matchedForeignZoneInPak})`
+                        : `${finalZoneName} (BRAK odpowiednika w .pak!)`
+                );
+            }
+
+            // Jeśli użytkownik WŁĄCZYŁ eksperymentalne nadpisywanie .bin:
+            if (patchBinStrings && !existsInPak && matchedForeignZoneInPak && matchedForeignZoneInPak.length === finalZoneName.length) {
+                binaryRenamePairsForPak.push(`${matchedForeignZoneInPak}=${finalZoneName}`);
+                addLog(
+                    'warn',
+                    'PAK-BIN-PATCH',
+                    `[${pakFile}] Eksperymentalny zapis binarny w .pak: "${matchedForeignZoneInPak}" ➔ "${finalZoneName}"`
+                );
+            }
+
+            // A. Tryb kompatybilności: usuwanie MiniObjectives
+            if (compatMode === 'no_mini_objectives' && zItem.obj?.props) {
+                delete zItem.obj.props.ZonePropertyMiniObjectiveCargo;
+                delete zItem.obj.props.ZonePropertyMiniObjectiveVisitAllZones;
+            }
+
+            // B. Obsługa ulepszanych garaży i brakującego GARAGE_EXIT (bez psucia pliku .bin!)
+            if (usesUpgradeGarage) {
+                if (garageMode === 'disable_second_garage') {
+                    // Jeśli to GARAGE_EXIT, którego nie ma w .pak (lub wyłączamy garaż), CAŁKOWICIE pomijamy go w zone_settings.json!
+                    if (isActiveProp(zProps.ZonePropertyGarageExit) || finalZoneName.endsWith('_GARAGE_EXIT')) {
+                        addLog(
+                            'info',
+                            'GARAGE-FIX',
+                            `[${mapName}] Całkowicie pominięto strefę "${finalZoneName}" w zone_settings.json (Tryb: disable_second_garage -> brak błędu Invalid zone i brak zwiechy C++)`
+                        );
+                        continue;
                     }
-                };
-                transformedZones.push(openGarageZone);
-                allExportedZonesSet.add(finalZoneName);
-                allExportedZonesSet.add(zItem.name);
-                addLog('info', 'GARAGE-MODE', `[${mapName}] Zamieniono ${finalZoneName} na zwykły otwarty garaż (jak na mapie startowej)`);
-                comparisonItems.push({
-                    category: `Zone (${mapName.replace(/^level_/i, '').toUpperCase()})`,
-                    name: finalZoneName,
-                    rawText: zItem.rawText,
-                    compiledJson: JSON.stringify(openGarageZone, null, 2)
-                });
-                continue;
+                    if (isActiveProp(zProps.ZonePropertyGarageEntrance)) {
+                        const neutralZone = {
+                            "$type": "ZoneSettings",
+                            "isForCoop": false,
+                            "name": finalZoneName,
+                            "props": {}
+                        };
+                        transformedZones.push(neutralZone);
+                        allExportedZonesSet.add(finalZoneName);
+                        addLog('info', 'GARAGE-FIX', `[${mapName}] Wyłączono właściwość garażową w "${finalZoneName}" (ustawiono props: {})`);
+                        comparisonItems.push({
+                            category: `Zone (${mapName.replace(/^level_/i, '').toUpperCase()})`,
+                            name: finalZoneName,
+                            rawText: zItem.rawText,
+                            compiledJson: JSON.stringify(neutralZone, null, 2)
+                        });
+                        continue;
+                    }
+                } else if (garageMode === 'remap_to_pak' || garageMode === 'convert_to_normal') {
+                    // Jeśli strefa (np. US_19_02_GARAGE_EXIT) nie istnieje w .pak, ale w .pak jest jej obcy odpowiednik (US_16_02_GARAGE_EXIT)
+                    // i nie jest używana po nazwie w żadnej misji -> używamy w zone_settings.json fizycznej nazwy z .pak!
+                    if (!existsInPak && matchedForeignZoneInPak && !missionUsedZones.includes(finalZoneName)) {
+                        addLog(
+                            'success',
+                            'GARAGE-JSON-REMAP',
+                            `[${mapName}] Dopasowano nazwę strefy w zone_settings.json do fizycznej sceny .pak (bez edycji .bin!): "${finalZoneName}" ➔ "${matchedForeignZoneInPak}"`
+                        );
+                        finalZoneName = matchedForeignZoneInPak;
+                    }
+
+                    if (garageMode === 'convert_to_normal' && isActiveProp(zProps.ZonePropertyGarageEntrance)) {
+                        const openGarageZone = {
+                            "$type": "ZoneSettings",
+                            "isForCoop": false,
+                            "name": finalZoneName,
+                            "props": {
+                                "ZonePropertyGarageEntrance": {
+                                    "$type": "ZonePropertyGarageEntrance"
+                                }
+                            }
+                        };
+                        transformedZones.push(openGarageZone);
+                        allExportedZonesSet.add(finalZoneName);
+                        addLog('info', 'GARAGE-FIX', `[${mapName}] Zamieniono "${finalZoneName}" na zwykły otwarty garaż`);
+                        comparisonItems.push({
+                            category: `Zone (${mapName.replace(/^level_/i, '').toUpperCase()})`,
+                            name: finalZoneName,
+                            rawText: zItem.rawText,
+                            compiledJson: JSON.stringify(openGarageZone, null, 2)
+                        });
+                        continue;
+                    }
+                }
             }
 
             const compiled = zoneTransformerInstance.transformZones(zItem.obj, finalZoneName);
             if (compiled) {
                 transformedZones.push(compiled);
                 allExportedZonesSet.add(finalZoneName);
-                allExportedZonesSet.add(zItem.name);
                 comparisonItems.push({
                     category: `Zone (${mapName.replace(/^level_/i, '').toUpperCase()})`,
                     name: finalZoneName,
@@ -1199,6 +1479,16 @@ function buildRegionPipeline({
                     compiledJson: JSON.stringify(compiled, null, 2)
                 });
             }
+        }
+
+        if (missingInPakDiagnostics.length > 0) {
+            addLog(
+                'warn',
+                'PAK-MISSING-ZONES',
+                `[${pakFile}] Strefy z initial.cache_block nieobecne pod swoją nazwą w binariach .pak (${missingInPakDiagnostics.length}): ${missingInPakDiagnostics.join(' | ')}`
+            );
+        } else {
+            addLog('success', 'PAK-DIAG', `[${pakFile}] 100% stref z zone_settings.json fizycznie istnieje w binariach pliku .pak!`);
         }
 
         const zoneSettingsJson = JSON.stringify({
@@ -1211,15 +1501,18 @@ function buildRegionPipeline({
             }
         }, null, 2);
 
+        // Pętla Tasków:
         const transformedTasks = [];
-        for (const tItem of currentMapData.tasksParsed) {
+        const tasksSourceList = compatMode === 'zones_only' ? [] : currentMapData.tasksParsed;
+        for (const tItem of tasksSourceList) {
             const compiled = taskTransformer.transformTask(tItem.obj, tItem.name, false);
             if (compiled) {
-                if (usesUpgradeGarage && garageMode === 'convert_to_normal') {
+                if (usesUpgradeGarage && (garageMode === 'convert_to_normal' || garageMode === 'disable_second_garage')) {
                     stripUpgradeGarageRewards(compiled, addLog);
                 }
 
                 transformedTasks.push(compiled);
+                allCompiledTasks.push(compiled);
                 totalMoney += compiled.rewards?.ObjectiveRewardMoney?.amount || 0;
                 totalXp += compiled.rewards?.ObjectiveRewardExperience?.amount || 0;
                 comparisonItems.push({
@@ -1257,7 +1550,8 @@ function buildRegionPipeline({
             mapBuildDir,
             String(FLIP_OFFSET),
             patchBin ? 'true' : 'false',
-            injectFiles ? 'true' : 'false'
+            injectFiles ? 'true' : 'false',
+            patchBinStrings ? binaryRenamePairsForPak.join(';') : ''
         ]);
 
         if (patchRes.status !== 0 || !patchRes.stdout.includes('SUCCESS:')) {
@@ -1266,7 +1560,15 @@ function buildRegionPipeline({
 
         builtPakPaths.push(destPakPath);
 
-        const [, injectedCount, oldByteHex] = patchRes.stdout.split(':');
+        const parts = patchRes.stdout.split(':');
+        const injectedCount = parts[1];
+        const oldByteHex = parts[2];
+        const patchedFilesLog = parts.slice(3).join(':');
+
+        if (patchedFilesLog) {
+            addLog('warn', 'PAK-BIN-PATCH', `[${pakFile}] Zmodyfikowano binarnie wewnątrz .pak wpis: ${patchedFilesLog}`);
+        }
+
         const filteredCount = currentMapData.filteredOutZones?.length || 0;
         totalFilteredZonesCount += filteredCount;
 
@@ -1297,21 +1599,22 @@ function buildRegionPipeline({
         });
     }
 
+    // Pętla Kontraktów:
     const transformedContracts = [];
     const blockerMapAudit = [];
+    const contractsSourceList = (compatMode === 'zones_only' || compatMode === 'no_contracts') ? [] : contractsParsed;
 
-    for (const cItem of contractsParsed) {
+    for (const cItem of contractsSourceList) {
         const compiled = taskTransformer.transformTask(cItem.obj, cItem.name, true);
         if (!compiled) continue;
 
-        if (upgradeGarageMapsSet.size > 0 && garageMode === 'convert_to_normal') {
+        if (upgradeGarageMapsSet.size > 0 && (garageMode === 'convert_to_normal' || garageMode === 'disable_second_garage')) {
             stripUpgradeGarageRewards(compiled, addLog);
         }
 
         totalMoney += compiled.rewards?.ObjectiveRewardMoney?.amount || 0;
         totalXp += compiled.rewards?.ObjectiveRewardExperience?.amount || 0;
 
-        // Sprawdzamy WSZYSTKIE etapy (stages) pod kątem spawnu ładunku poza mapą startową (wymóg ModMapError)
         let nonHubSpawnLevel = null;
         for (const stg of (compiled.stages || [])) {
             for (const sp of (stg.spawnCargoOnStageActive || [])) {
@@ -1383,6 +1686,7 @@ function buildRegionPipeline({
     }
 
     const contractsJson = JSON.stringify(transformedContracts, null, 2);
+    const allTasksJson = JSON.stringify(allCompiledTasks, null, 2);
     const contractsUnwrapped = contractsJson.replace(/^\[\r?\n?/, '').replace(/\r?\n?\]$/, '') + ',';
 
     const localObjectiveSettingsJson = JSON.stringify({
@@ -1395,11 +1699,28 @@ function buildRegionPipeline({
     }, null, 2);
 
     const contractsFilePath = path.join(baseOutputDir, 'contractsettings.json');
+    const allTasksFilePath = path.join(baseOutputDir, 'all_taskssettings.json');
     fs.writeFileSync(contractsFilePath, contractsJson, 'utf8');
+    fs.writeFileSync(allTasksFilePath, allTasksJson, 'utf8');
     fs.writeFileSync(path.join(baseOutputDir, 'contractsettings_unwrapped.txt'), contractsUnwrapped, 'utf8');
     fs.writeFileSync(path.join(baseOutputDir, 'local_objective_settings.json'), localObjectiveSettingsJson, 'utf8');
 
-    addLog('success', 'CONTRACTS', `Wygenerowano ${transformedContracts.length} kontraktów dla regionu ${normRegion}. Ekonomia regionu: $${totalMoney.toLocaleString()} | ${totalXp.toLocaleString()} XP.`);
+    addLog('success', 'CONTRACTS', `Wygenerowano ${transformedContracts.length} kontraktów oraz ${allCompiledTasks.length} tasków dla regionu ${normRegion}. Ekonomia regionu: $${totalMoney.toLocaleString()} | ${totalXp.toLocaleString()} XP.`);
+
+    const traceTargets = [
+        ...mapsOutput.flatMap(m => [
+            [`${m.mapName}/zone_settings`, m.zoneSettingsJson],
+            [`${m.mapName}/objective_settings`, m.objectiveSettingsJson]
+        ]),
+        ['contracts', contractsJson]
+    ];
+    for (const needle of ['GARAGE_EXIT', 'GARAGE_ENTRANCE']) {
+        for (const [label, jsonStr] of traceTargets) {
+            for (const hit of findPathsInJson(JSON.parse(jsonStr), needle, label)) {
+                addLog('info', 'ZONE-TRACE', hit);
+            }
+        }
+    }
 
     const missingZonesInPaks = missionUsedZones.filter(z => !allExportedZonesSet.has(z));
     if (missingZonesInPaks.length > 0) {
@@ -1412,11 +1733,20 @@ function buildRegionPipeline({
         addLog('warn', 'UNMAPPED', w);
     }
 
+    auditOutput([
+        ...mapsOutput.flatMap(m => [
+            [`${m.mapName}/zones`, m.zoneSettingsJson],
+            [`${m.mapName}/tasks`, m.objectiveSettingsJson]
+        ]),
+        ['contracts', contractsJson]
+    ], addLog);
+
     return {
         region: normRegion,
         outputDir: baseOutputDir,
         builtPakPaths,
         contractsFilePath,
+        allTasksFilePath,
         maps: mapsOutput,
         contractsCount: transformedContracts.length,
         totalFilteredZonesCount,
@@ -1486,12 +1816,24 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    if (url.pathname === '/api/game-logs' && req.method === 'GET') {
+        try {
+            const logs = inspectSnowRunnerLogs();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, logs }));
+        } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+        return;
+    }
+
     if (url.pathname === '/api/inject-prebuild' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => (body += chunk));
         req.on('end', () => {
             try {
-                const { prebuildDir, projectName, contractsFilePath } = JSON.parse(body || '{}');
+                const { prebuildDir, projectName, contractsFilePath, allTasksFilePath } = JSON.parse(body || '{}');
                 if (!contractsFilePath || !fs.existsSync(contractsFilePath)) {
                     throw new Error('Najpierw zbuduj region, aby wygenerować kontrakty.');
                 }
@@ -1507,6 +1849,9 @@ const server = http.createServer((req, res) => {
                 }
 
                 const contractsArray = JSON.parse(fs.readFileSync(contractsFilePath, 'utf8').replace(/^\uFEFF/, ''));
+                const tasksArray = (allTasksFilePath && fs.existsSync(allTasksFilePath))
+                    ? JSON.parse(fs.readFileSync(allTasksFilePath, 'utf8').replace(/^\uFEFF/, ''))
+                    : null;
 
                 const localObjPath = path.join(projectDir, 'local_objective_settings.json');
                 let localObjData = {
@@ -1538,13 +1883,9 @@ const server = http.createServer((req, res) => {
                         tasksSettings: []
                     }
                 };
-                let preservedTasksCount = 0;
                 if (fs.existsSync(mainObjPath)) {
                     try {
                         mainObjData = JSON.parse(fs.readFileSync(mainObjPath, 'utf8').replace(/^\uFEFF/, ''));
-                        preservedTasksCount = Array.isArray(mainObjData?.SslValue?.tasksSettings)
-                            ? mainObjData.SslValue.tasksSettings.length
-                            : 0;
                     } catch (err) {
                         console.error('Error parsing objective_settings.json:', err);
                     }
@@ -1553,6 +1894,9 @@ const server = http.createServer((req, res) => {
                     mainObjData.SslValue = { contestSettings: [], contractsSettings: [], tasksSettings: [] };
                 }
                 mainObjData.SslValue.contractsSettings = contractsArray;
+                if (tasksArray !== null) {
+                    mainObjData.SslValue.tasksSettings = tasksArray;
+                }
                 fs.writeFileSync(mainObjPath, JSON.stringify(mainObjData, null, 4), 'utf8');
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1560,7 +1904,7 @@ const server = http.createServer((req, res) => {
                     ok: true,
                     projectDir,
                     injectedContractsCount: contractsArray.length,
-                    preservedTasksCount,
+                    injectedTasksCount: mainObjData.SslValue.tasksSettings?.length || 0,
                     time: formatTime()
                 }));
             } catch (err) {
@@ -1752,7 +2096,8 @@ const server = http.createServer((req, res) => {
                     forceCacheRefresh: Boolean(payload.forceCacheRefresh),
                     zoneFilterMode: payload.zoneFilterMode || 'smart',
                     autoInferBlockerMap: Boolean(payload.autoInferBlockerMap),
-                    garageMode: payload.garageMode || 'keep_raw_false'
+                    garageMode: payload.garageMode || 'keep_raw_false',
+                    compatMode: payload.compatMode || 'normal'
                 });
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: true, result }));
@@ -1817,7 +2162,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
     console.log(`=====================================================`);
-    console.log(` SR Studio v7.5 działa!`);
+    console.log(` SR Studio v7.6 działa!`);
     console.log(` Otwórz w przeglądarce: http://localhost:${PORT}`);
     console.log(`=====================================================`);
 });

@@ -83,6 +83,9 @@ export class CacheBlockExtractor {
         return results;
     }
 
+    /**
+     * Wyciąga wszystkie identyfikatory stref używane w tekście (zarówno z "level_xx || ZONE", jak i z tablic/pól zwykłych)
+     */
     collectReferencedZonesFromRaw(rawText, targetSet) {
         const pipeRegex = /"\s*level_[a-z0-9_]+\s*\|\|\s*([A-Za-z0-9_]+)\s*"/gi;
         let m;
@@ -90,8 +93,8 @@ export class CacheBlockExtractor {
             targetSet.add(m[1].trim());
         }
 
-        const zoneIdRegex = /\bzoneId\s*=\s*"([A-Za-z0-9_]+)"/g;
-        while ((m = zoneIdRegex.exec(rawText)) !== null) {
+        const directKeysRegex = /\b(?:zoneId|platformId)\s*=\s*"([A-Za-z0-9_]+)"/g;
+        while ((m = directKeysRegex.exec(rawText)) !== null) {
             targetSet.add(m[1].trim());
         }
 
@@ -102,30 +105,30 @@ export class CacheBlockExtractor {
                 const strRegex = /"([A-Za-z0-9_]+)"/g;
                 let sm;
                 while ((sm = strRegex.exec(m[1])) !== null) {
-                    targetSet.add(sm[1].trim());
+                    const val = sm[1].trim();
+                    if (val.includes('||')) {
+                        targetSet.add(val.split('||')[1].trim());
+                    } else if (val !== 'ZoneGlobalIdentificator') {
+                        targetSet.add(val);
+                    }
                 }
             }
         }
     }
 
-    collectInfraLinkedZonesFromRaw(rawZoneText, targetSet) {
-        const pipeRegex = /"\s*level_[a-z0-9_]+\s*\|\|\s*([A-Za-z0-9_]+)\s*"/gi;
-        let m;
-        while ((m = pipeRegex.exec(rawZoneText)) !== null) {
-            targetSet.add(m[1].trim());
-        }
-        const platformRegex = /\bplatformId\s*=\s*"([A-Za-z0-9_]+)"/g;
-        while ((m = platformRegex.exec(rawZoneText)) !== null) {
-            targetSet.add(m[1].trim());
-        }
-    }
-
+    /**
+     * Sprawdza czy strefa posiada faktycznie aktywne właściwości infrastruktury (pomijając __type = "null" oraz ZonePropertyObjectiveZoneToVisit)
+     */
     hasInfrastructureProps(zoneObj) {
-        if (!zoneObj || !zoneObj.props || typeof zoneObj.props !== 'object') return false;
-        const propKeys = Object.keys(zoneObj.props).filter(k => k !== '__type' && k !== '__value');
-        if (propKeys.length === 0) return false;
-        const nonObjectiveProps = propKeys.filter(k => k !== 'ZonePropertyObjectiveZoneToVisit');
-        return nonObjectiveProps.length > 0;
+        if (!zoneObj || !zoneObj.props || typeof zoneObj.props !== 'object' || zoneObj.props.__type === 'null') {
+            return false;
+        }
+        const activePropKeys = Object.keys(zoneObj.props).filter(k => {
+            if (k === '__type' || k === '__value' || k === 'ZonePropertyObjectiveZoneToVisit') return false;
+            const propVal = zoneObj.props[k];
+            return Boolean(propVal && typeof propVal === 'object' && propVal.__type !== 'null');
+        });
+        return activePropKeys.length > 0;
     }
 
     searchBlocksInCache(query, limit = 30) {
@@ -133,8 +136,6 @@ export class CacheBlockExtractor {
         if (!q) return [];
         const results = [];
         const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-        // 1. Szukanie bloków NAME = { ... }
         const blockRegex = new RegExp(`\\b([A-Za-z0-9_]*${escaped}[A-Za-z0-9_]*)\\s*=\\s*\\{`, 'gi');
         let match;
 
@@ -153,8 +154,6 @@ export class CacheBlockExtractor {
             }
         }
 
-        // 2. Jeśli wpisano frazę ze spacjami lub kod skryptu (np. "Invalid zone for map in setting"),
-        // wyciągamy kontekst ±35 linii wokół każdego wystąpienia w initial.cache_block
         if (results.length === 0 || q.includes(' ')) {
             const rawRegex = new RegExp(escaped, 'gi');
             let rMatch;
@@ -180,7 +179,6 @@ export class CacheBlockExtractor {
         const coreToFullMapName = {};
 
         for (const mapName of mapNames) {
-            // Wyciągamy bazowy 3-członowy kod (np. z "level_ru_02_01_crop" -> "RU_02_01")
             const coreMatch = mapName.match(/^level_([a-z]{2}_\d{2}_\d{2})/i);
             const shortCode = coreMatch ? coreMatch[1].toUpperCase() : mapName.replace(/^level_/i, '').toUpperCase();
             const coreLevel = `level_${shortCode.toLowerCase()}`;
@@ -218,7 +216,7 @@ export class CacheBlockExtractor {
         const contestUsedZones = new Set();
         const infraLinkedZones = new Set();
 
-        // 1. Zbieranie stref z bloków zoneDesc + odczyt indexInRegion
+        // 1. Zbieranie stref z bloków zoneDesc
         const zoneContainers = this.findAllNamedContainers('zoneDesc');
         for (const { body: containerBody, prefixContext } of zoneContainers) {
             if (!containerBody.toUpperCase().includes(normRegion)) continue;
@@ -253,8 +251,10 @@ export class CacheBlockExtractor {
                     for (const p of parsedArr) {
                         p.rawText = item.rawText;
                         mapData[bestMap].rawZones.push(p);
+                        // Jeśli strefa ma aktywne właściwości infrastruktury (w tym MiniObjectiveCargo / MiniObjectiveVisitAllZones / Gateway / CargoLoading),
+                        // zbieramy wszystkie strefy, do których się odwołuje (visitAllZones, additionalUnloadZones, platformId, unloadBlockedZoneId, rewards)!
                         if (this.hasInfrastructureProps(p.obj)) {
-                            this.collectInfraLinkedZonesFromRaw(item.rawText, infraLinkedZones);
+                            this.collectReferencedZonesFromRaw(item.rawText, infraLinkedZones);
                         }
                     }
                 }
@@ -348,6 +348,11 @@ export class CacheBlockExtractor {
             }
         }
 
+        // Łączymy strefy używane przez misje oraz strefy powiązane przez MiniObjectives / infrastrukturę
+        for (const iz of infraLinkedZones) {
+            missionUsedZones.add(iz);
+        }
+
         // 5. Filtrowanie stref dla każdej mapy
         for (const mapName of mapNames) {
             const mData = mapData[mapName];
@@ -355,14 +360,14 @@ export class CacheBlockExtractor {
                 const zName = zItem.name;
                 const usedInMission = missionUsedZones.has(zName);
                 const usedInContest = contestUsedZones.has(zName);
-                const isInfra = this.hasInfrastructureProps(zItem.obj) || infraLinkedZones.has(zName);
+                const isInfra = this.hasInfrastructureProps(zItem.obj);
 
                 if (zoneFilterMode === 'none') {
                     mData.zonesParsed.push(zItem);
                     continue;
                 }
 
-                if (usedInContest && !usedInMission) {
+                if (usedInContest && !usedInMission && !isInfra) {
                     mData.filteredOutZones.push({ name: zName, reason: 'CONTEST_ZONE' });
                     continue;
                 }
